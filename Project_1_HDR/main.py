@@ -10,16 +10,16 @@ import cv2
 import imageio
 
 #%%
-_img_dir_ = './photos/scene_2'
+_img_dir_ = './data'
 _file_type_ = 'JPG'
-_output_name_ = 'scene_2'
+
 num_photos = 7
 ref_idx = 3 # int(len(image_c1_list) / 2)
 
 #%%
 image_RGB_list = []
 image_YCbCr_list = []
-for i, filename in enumerate(sorted(glob.glob(_img_dir_+'/*.'+_file_type_))): #assuming gif
+for i, filename in enumerate(sorted(glob.glob(_img_dir_+'/original/*.'+_file_type_))): #assuming gif
     if i == num_photos:
         break
     print(f'image {i}: {filename}')
@@ -164,7 +164,7 @@ for i in range(len(image_Y_list)):
     img = Image.fromarray(intensity, 'L')
     dx, dy = MTB(ref_img=ref_img, img=img)
     translation.append((dx, dy))
-print(translation)
+print(f'Translation: {translation}')
 
 #%%
 # Shift each channel by translation
@@ -275,6 +275,10 @@ plt.ylabel('pixel value Z')
 plt.xticks(range(-5, 5, 1))
 plt.yticks(range(0, 256, 50))
 
+path_response_curves = f'{_img_dir_}/response_curves.PNG'
+plt.savefig(path_response_curves)
+print(f'Response curves saved at {path_response_curves}')
+
 #%%
 # Recover irradiance
 def weightFn(z):
@@ -307,11 +311,16 @@ print(f'HDR_image.shape = {HDR_image.shape}')
 plt.figure(figsize=(16, 9), dpi=100)
 im = plt.imshow(G_w, cmap='jet', vmin=np.percentile(G_w, 3), vmax=np.percentile(G_w, 97))
 cbar = plt.colorbar(im)
-plt.show()
+
+path_radiance_visualize = f'{_img_dir_}/radiance_visualize.PNG'
+plt.savefig(path_radiance_visualize)
+print(f'Radiance visualization saved at {path_radiance_visualize}')
 
 #%%
 # Save HDR
-cv2.imwrite(f'./{_output_name_}.hdr', HDR_image.astype(np.float32))
+path_hdr = f'{_img_dir_}/HDR_image.hdr'
+cv2.imwrite(path_hdr, HDR_image.astype(np.float32))
+print(f'HDR image saved at {path_hdr}')
 
 #%%
 ####################################
@@ -363,5 +372,12 @@ def saveTonemapPhotographicLocal(path, HDR_image, key=0.5, delta=1e-6, s_max=43,
     cv2.imwrite(path, LDR_image)
     return LDR_image
 
-LDR_phtographi_global = saveTonemapPhotographicGlobal('./tonemap_photographic_global.JPG', HDR_image)
-LDR_phtographi_local = saveTonemapPhotographicLocal('./tonemap_photographic_local.JPG', HDR_image, key=0.45)
+path_global_map = f'{_img_dir_}/tonemap_photographic_global.JPG'
+path_local_map = f'{_img_dir_}/tonemap_photographic_local.JPG'
+LDR_phtographi_global = saveTonemapPhotographicGlobal(path_global_map, HDR_image)
+LDR_phtographi_local = saveTonemapPhotographicLocal(path_local_map, HDR_image)
+print(f'Tone mapped images saved at {path_global_map} and {path_local_map}')
+
+#%%
+cv2.imwrite('./result.PNG', LDR_phtographi_local)
+print(f'Final result saved at ./result.PNG')
