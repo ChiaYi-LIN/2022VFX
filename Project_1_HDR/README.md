@@ -1,9 +1,14 @@
+# Directory (make sure to get into code directory)
+```shell
+cd code
+```
+
 # Environments
 ```shell
-conda env create -n <env> -f ./code/environment.yaml
+conda env create -n <env> -f environment.yaml
 ```
 
 # Run program
 ```python
-python ./code/main.py
+python main.py
 ```
