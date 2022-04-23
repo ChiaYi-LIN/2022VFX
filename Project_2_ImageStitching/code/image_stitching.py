@@ -9,13 +9,17 @@ import pandas as pd
 from scipy.spatial.distance import cdist
 
 #%%
-_dirname_ = '../parrington'
+config = {
+    "dirname" : "../parrington",
+    "left_to_right" : False,
+    "pano_save_path" : "./pre_panorama.jpg",
+}
 
 #%%
 '''
 Load images and focals
 '''
-def get_focals(path):
+def get_focals_autostitch(path):
     focals = []
     with open(path, 'r') as f:
         data = [line for line in f]
@@ -40,7 +44,7 @@ def read_data(dirname, max_h=480, img_extensions=['.png', '.jpg', '.gif', '.JPG'
                 bgr = cv2.resize(bgr, (new_w, max_h), cv2.INTER_LINEAR)
             rgbs += [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)]
         elif extension in ['.txt']:
-            focals = get_focals(filepath)
+            focals = get_focals_autostitch(filepath)
     
     return np.array(rgbs), np.array(focals)
 
@@ -53,7 +57,7 @@ def save_image(rgb, path):
     cv2.imwrite(path, bgr)
 
 #%%
-images, focals = read_data(_dirname_)
+images, focals = read_data(config["dirname"])
 
 #%%
 def cylinder_warping(imgs, focals):
@@ -80,7 +84,7 @@ def cylinder_warping(imgs, focals):
 cw_images = cylinder_warping(images, focals)
 
 #%%
-def compute_corner_response(gray, kernel=9, sigma=3, k=0.04):
+def compute_corner_response(gray, kernel=5, sigma=3, k=0.04):
     K = (kernel, kernel)
 
     # Compute x and y derivatives of image
@@ -102,12 +106,15 @@ def compute_corner_response(gray, kernel=9, sigma=3, k=0.04):
     traceM = Sx2 + Sy2
     R = detM - k * (traceM ** 2)
 
-    print(f'max R: {np.max(R)}, min R: {np.min(R)}')
+    print(f'Rmax: {np.max(R)}\nRmin: {np.min(R)}')
     return R, Ix, Iy, Ix2, Iy2
 
 def get_local_max_R(R, Rthres=0.06):
     localMax = np.ones(R.shape, dtype=np.uint8)
-    localMax[R <= np.max(R) * Rthres] = 0
+    if np.max(R) > 600000:
+        localMax[R <= np.max(R) * 0.03] = 0
+    else:    
+        localMax[R <= np.max(R) * Rthres] = 0
 
     kernel = np.ones((3,3), np.uint8)
     kernel[1,1] = 0
@@ -120,11 +127,11 @@ def get_local_max_R(R, Rthres=0.06):
             else:
                 localMax[i, j] = 0
 
-    print(f'Number of Corners: {np.sum(localMax)}')
+    print(f'Corners: {np.sum(localMax)}')
     feature_points = np.where(localMax > 0)
     return feature_points[1], feature_points[0] # fpx, fpy
 
-def get_orientations(Ix, Iy, Ix2, Iy2, bins=36, kernel=9):
+def get_orientations(Ix, Iy, Ix2, Iy2, fpx, fpy, bins=36, kernel=9):
     M = (Ix2 + Iy2) ** (1/2)
     theta = np.arctan2(Iy, Ix) * (180 / np.pi)
     theta = (theta + 360) % 360
@@ -137,77 +144,218 @@ def get_orientations(Ix, Iy, Ix2, Iy2, bins=36, kernel=9):
     for b in range(bins):
         votes[b][theta_vote_bin == b] = 1
         votes[b] *= M
-        votes[b] = cv2.GaussianBlur(votes[b], (kernel, kernel), 0)
+        votes[b] = cv2.GaussianBlur(votes[b], (kernel, kernel), 1.5)
 
-    ori = np.argmax(votes, axis=0)
+    ori = np.ones((len(fpx), 2)) * (-1)
+
+    for i in range(len(fpy)):
+        y, x = fpy[i], fpx[i]
+        vote = votes[:, y, x]
+        best_bin_1, best_mag_1 = np.argmax(vote), np.max(vote) # best orientation
+        voet_2 = vote.copy()
+        voet_2[best_bin_1] = np.min(vote)
+        best_bin_2, best_mag_2 = np.argmax(voet_2), np.max(voet_2) # second best orientation
+        if best_mag_2 >= best_mag_1 * 0.8:
+            ori[i, 0], ori[i, 1] = best_bin_1, best_bin_2
+        else:
+            ori[i, 0] = best_bin_1
 
     return ori, M, theta
 
-def get_descriptors(fpx, fpy, ori, M, theta, ori_bin_size=10, bins=8):
+def get_descriptors(fpx, fpy, ori, M, theta, bins=8):
     
     h, w = M.shape
     half_w = w / 2
+
+    kernel_1d = cv2.getGaussianKernel(16, 16 * 0.5)
+    kernel_2d = kernel_1d @ kernel_1d.T
+    gaussian_filter = kernel_2d / kernel_2d.sum()
+    
     assert(360 % bins == 0)
     bin_size = 360 / bins
 
     left_descriptors = []
     right_descriptors = []
-    for y, x in zip(fpy, fpx):
-        if y - 12 < 0 or y + 12 >= h or x - 12 < 0 or x + 12 >= w:
+    for i in range(len(fpy)):
+        y, x = fpy[i], fpx[i]
+        if y - 8 < 0 or y + 8 >= h or x - 8 < 0 or x + 8 >= w:
             # print(f'Skip Keypoint (y, x) = {y, x}')
             continue
-        vector = []
-        rotation = ori[y, x] * ori_bin_size
-        rotation_matrix = cv2.getRotationMatrix2D((12, 12), rotation, 1) # cv2.getRotationMatrix2D(center, angle, scale) 
-        rotated_M = cv2.warpAffine(M[y-12:y+12, x-12:x+12], rotation_matrix, (24, 24))
-        rotated_theta = (theta[y-12:y+12, x-12:x+12] - rotation + 360) % 360
-        rotated_theta_vote_bin = np.floor((rotated_theta + (bin_size / 2)) / bin_size) % bins
-        for fy in range(4, 20, 4):
-            for fx in range(4, 20, 4):
-                sv = np.zeros(bins)
-                for y_offset in range(4):
-                    for x_offset in range(4):
-                        b = rotated_theta_vote_bin[fy + y_offset][fx + x_offset]
-                        sv[int(b)] = rotated_M[fy + y_offset][fx + x_offset]
-                    
-                sv_n1 = [x / (np.sum(sv) + 1e-8) for x in sv]
-                sv_clip = [x if x < 0.2 else 0.2 for x in sv_n1]
-                sv_n2 = [x / (np.sum(sv_clip) + 1e-8) for x in sv_clip]
+        for j in range(2): # best and second best orientations
+            if ori[i][j] == -1: continue # no second best
+            vector = []
+            local_M = M[y-8:y+8, x-8:x+8]
+            local_theta = theta[y-8:y+8, x-8:x+8]
+            local_theta_vote_bin = np.floor((local_theta + (bin_size / 2)) / bin_size) % bins
+            
+            for y_t in range(0, 16, 4):
+                for x_t in range(0, 16, 4):
+                    sv = np.zeros(bins)
+                    for y_offset in range(4):
+                        for x_offset in range(4):
+                            b = local_theta_vote_bin[y_t+y_offset][x_t+x_offset]
+                            sv[int(b)] = local_M[y_t+y_offset][x_t+x_offset] * gaussian_filter[y_t+y_offset][x_t+x_offset]
+                        
+                    sv_n1 = [x / (np.sum(sv) + 1e-8) for x in sv]
+                    sv_clip = [x if x < 0.2 else 0.2 for x in sv_n1]
+                    sv_n2 = [x / (np.sum(sv_clip) + 1e-8) for x in sv_clip]
 
-                vector += sv_n2
+                    vector += sv_n2
 
-        if x < half_w:
-            left_descriptors.append({'y': y, 'x': x, 'vector': vector})
-        else:
-            right_descriptors.append({'y': y, 'x': x, 'vector': vector})
-    
-    print(f'Number of Descriptors: Left = {len(left_descriptors)}, Right = {len(right_descriptors)}')
+            if x < half_w:
+                left_descriptors.append({'x': x, 'y': y, 'vector': vector})
+            else:
+                right_descriptors.append({'x': x, 'y': y, 'vector': vector})
+
+
+    print(f'Descriptors: {len(left_descriptors) + len(right_descriptors)}')
     return left_descriptors, right_descriptors
 
 #%%
 L_DES, R_DES = [], []
 for i, image in enumerate(cw_images):
-    print(f"Processing image {i}")
+    print(i)
     w_imgs_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     R, Ix, Iy, Ix2, Iy2 = compute_corner_response(w_imgs_gray)
     fpx, fpy = get_local_max_R(R)
-    ori, M, theta = get_orientations(Ix, Iy, Ix2, Iy2)
+    ori, M, theta = get_orientations(Ix, Iy, Ix2, Iy2, fpx, fpy)
     l_des, r_des = get_descriptors(fpx, fpy, ori, M, theta)
     L_DES.append(l_des)
     R_DES.append(r_des)
 
 #%%
+def find_matches(des1, des2, thres=0.8):
+    des1_vectors = pd.DataFrame(des1)['vector'].tolist()
+    des2_vectors = pd.DataFrame(des2)['vector'].tolist()
 
+    distances = cdist(des1_vectors, des2_vectors)
+    sorted_index = np.argsort(distances, axis=1)
+    matches = []
+    for i, si in enumerate(sorted_index):
+        first_match = distances[i, si[0]]
+        second_match = distances[i, si[1]]
+        if (first_match / second_match) < thres:
+            matches.append([i, si[0]])
+    
+    print(f'Matches: {len(matches)}')
+    return matches
+
+def ransac(matches, des1, des2, n=1, K=1000):
+    matches = np.array(matches)
+    m1, m2 = matches[:, 0], matches[:, 1]
+    
+    P1 = np.array(pd.DataFrame(des1).loc[m1][['x', 'y']])
+    P2 = np.array(pd.DataFrame(des2).loc[m2][['x', 'y']])
+
+    Err, Dxy = [], []
+    for _ in range(K):
+        samples = np.random.randint(0, len(P1), n)
+        dxy = np.mean(P1[samples] - P2[samples], axis=0).astype(np.int32)
+        diff_xy = np.abs(P1 - (P2 + dxy))
+        err = np.sum(np.sign(np.sum(diff_xy, axis=1)))
+        Err += [err]
+        Dxy += [dxy]
+
+    E_sortindex = np.argsort(Err)
+    best_dxy = Dxy[E_sortindex[0]]
+    
+    return best_dxy
 
 #%%
-
+Dxy = [np.zeros(2).astype(np.int32)]
+if config["left_to_right"]:
+    for i in range(len(cw_images)-1):
+        print(i)
+        matches = find_matches(L_DES[i+1], R_DES[i])
+        Dxy += [ransac(matches, L_DES[i+1], R_DES[i])]
+else:
+    for i in range(len(cw_images)-1):
+        print(i)
+        matches = find_matches(L_DES[i], R_DES[i+1])
+        Dxy += [ransac(matches, L_DES[i], R_DES[i+1])]
 
 #%%
-l_Des += [l_des]
-r_Des += [r_des]
+def get_panorama_init(Dxy_all, image_shape):
+    h, w, c = image_shape
+    
+    Dx, Dy = Dxy_all[:, 0], Dxy_all[:, 1]
+    dx_max, dx_min = np.max(Dx), np.min(Dx)
+    dy_max, dy_min = np.max(Dy), np.min(Dy)
+    
+    offset_x = -min(dx_min, 0)
+    offset_y = -min(dy_min, 0)
+    
+    pano_w = w + (dx_max - dx_min)
+    pano_h = h + (dy_max - dy_min)
+    
+    pano = np.zeros((pano_h, pano_w, c)).astype(np.float32)
+    
+    return pano, offset_x, offset_y
+
+def blend_linear_helper(pano, im, x, y, sign):
+    h, w, c = im.shape
+    if np.sum(pano) == 0:
+        pano[y:y+h, x:x+w] = im.astype(np.float32)
+    else:
+        w_pano = np.sign(pano)
+    
+        w_im = np.zeros(pano.shape)
+        w_im[y:y+h, x:x+w][im > 0] = 1
+        
+        blend_area = w_pano + w_im - np.sign(w_pano + w_im)
+        
+        sum_x = np.sum(blend_area, axis=0)
+        sum_y = np.sum(blend_area, axis=1)
+        
+        index_x = np.where(sum_x > 0)[0]
+        start_x, end_x = index_x[0], index_x[-1] + 1
+        index_y = np.where(sum_y > 0)[0]
+        start_y, end_y = index_y[0], index_y[-1] + 1
+
+        xlen = end_x - start_x
+        ylen = end_y - start_y
+        
+        inter = np.zeros((ylen, xlen))
+        if sign >= 0:
+            inter += np.linspace(0, 1, xlen)
+        else:
+            inter += np.linspace(1, 0, xlen)
+            
+        inter = np.stack([inter, inter, inter], axis=2)
+        
+        im_add = np.zeros(pano.shape).astype(np.float32)
+        im_add[y:y+h, x:x+w] = im.astype(np.float32)
+        
+        w_im[start_y:end_y, start_x:end_x] *= inter
+        w_im[pano == 0] = 1
+        w_im[im_add == 0] = 0
+        
+        w_pano[start_y:end_y, start_x:end_x] *= (1. - inter)
+        w_pano[im_add == 0] = 1
+        w_pano[pano == 0] = 0
+        
+        pano = w_pano * pano + w_im * im_add
+        
+    return pano
+
+def blend_linear(images, Dxy):
+    _, h, w, c = images.shape
+    Dxy_all = np.cumsum(Dxy, axis=0)
+    
+    pano, offset_x, offset_y = get_panorama_init(Dxy_all, (h, w, c))
+    
+    for _, (image, dxy_all, dxy) in enumerate(zip(images, Dxy_all, Dxy)):
+        dx_all, dy_all = dxy_all
+        pano = blend_linear_helper(pano, image, dx_all+offset_x, dy_all+offset_y, dxy[0])
+
+    return pano.astype(np.uint8)
 
 #%%
-theta.shape
+pano = blend_linear(cw_images, Dxy)
+
+#%%
+save_image(pano, config["pano_save_path"])
+print(f'Pano saved at {config["pano_save_path"]}')
 
 #%%
 '''
@@ -231,7 +379,7 @@ def plot_features(im, R, fpx, fpy, Ix, Iy, arrow_size=1.0, i=0):
     ax[0, 1].imshow(np.log(R + 1e-4), cmap='jet'); ax[0, 1].set_title('R')
     ax[1, 0].imshow(feature_points); ax[1, 0].set_title('Feature Points')
     ax[1, 1].imshow(feature_gradients); ax[1, 1].set_title('Gradients')
-    plt.savefig(f'features-{i}.png')
-    # plt.show()
+    # plt.savefig(f'features-{i}.png')
+    plt.show()
 #%%
 plot_features(cw_images[0], R, fpx, fpy, Ix, Iy)
