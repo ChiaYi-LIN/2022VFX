@@ -1,6 +1,5 @@
 #%%
 import numpy as np
-import glob
 import cv2
 import os
 import matplotlib.pyplot as plt
@@ -12,7 +11,7 @@ from scipy.spatial.distance import cdist
 config = {
     "dirname" : "../parrington",
     "left_to_right" : False,
-    "pano_save_path" : "./pre_panorama.jpg",
+    "pano_save_path" : "../result.png",
 }
 
 #%%
@@ -292,6 +291,17 @@ def get_panorama_init(Dxy_all, image_shape):
     
     return pano, offset_x, offset_y
 
+def get_used_range(img_part):
+    sum_x = np.sum(img_part, axis=0)
+    sum_y = np.sum(img_part, axis=1)
+    
+    index_x = np.where(sum_x > 0)[0]
+    start_x, end_x = index_x[0], index_x[-1] + 1
+    index_y = np.where(sum_y > 0)[0]
+    start_y, end_y = index_y[0], index_y[-1] + 1
+
+    return start_x, end_x, end_x - start_x, start_y, end_y, end_y - start_y
+
 def blend_linear_helper(pano, im, x, y, sign):
     h, w, c = im.shape
     if np.sum(pano) == 0:
@@ -303,23 +313,13 @@ def blend_linear_helper(pano, im, x, y, sign):
         w_im[y:y+h, x:x+w][im > 0] = 1
         
         blend_area = w_pano + w_im - np.sign(w_pano + w_im)
+        start_x, end_x, len_x, start_y, end_y, len_y = get_used_range(blend_area)
         
-        sum_x = np.sum(blend_area, axis=0)
-        sum_y = np.sum(blend_area, axis=1)
-        
-        index_x = np.where(sum_x > 0)[0]
-        start_x, end_x = index_x[0], index_x[-1] + 1
-        index_y = np.where(sum_y > 0)[0]
-        start_y, end_y = index_y[0], index_y[-1] + 1
-
-        xlen = end_x - start_x
-        ylen = end_y - start_y
-        
-        inter = np.zeros((ylen, xlen))
+        inter = np.zeros((len_y, len_x))
         if sign >= 0:
-            inter += np.linspace(0, 1, xlen)
+            inter += np.linspace(0, 1, len_x)
         else:
-            inter += np.linspace(1, 0, xlen)
+            inter += np.linspace(1, 0, len_x)
             
         inter = np.stack([inter, inter, inter], axis=2)
         
@@ -354,32 +354,33 @@ def blend_linear(images, Dxy):
 pano = blend_linear(cw_images, Dxy)
 
 #%%
-save_image(pano, config["pano_save_path"])
+def drift(pano):
+    pano_gray = cv2.cvtColor(pano, cv2.COLOR_RGB2GRAY)
+    h, w = pano_gray.shape
+    
+    start_x, end_x, len_x, start_y, end_y, len_y =  get_used_range(pano_gray)
+    
+    left_y = np.where(pano_gray[:, start_x] > 0)[0]
+    upper_left = [start_x, left_y[0]]
+    bottom_left = [start_x, left_y[-1]]
+    
+    right_y = np.where(pano_gray[:, end_x-1] > 0)[0]
+    upper_right = [end_x-1, right_y[0]]
+    bottom_right = [end_x-1, right_y[-1]]
+    
+    src = np.float32([upper_left, upper_right, bottom_left, bottom_right])
+    dst = np.float32([[0, 0], [w-1, 0], [0, h-1], [w-1, h-1]])
+
+    M = cv2.getPerspectiveTransform(src, dst)
+    pano_drift = cv2.warpPerspective(pano, M, (w, h))
+    
+    return pano_drift
+
+#%%
+pano_drift = drift(pano)
+
+#%%
+save_image(pano_drift, config["pano_save_path"])
 print(f'Pano saved at {config["pano_save_path"]}')
 
 #%%
-'''
-Plot
-'''
-def plot_features(im, R, fpx, fpy, Ix, Iy, arrow_size=1.0, i=0):
-    h, w, c = im.shape
-    
-    feature_points = np.copy(im)
-    for x, y in zip(fpx, fpy):
-        cv2.circle(feature_points, (x, y), radius=1, color=[255, 0, 0], thickness=1, lineType=1) 
-        
-    feature_gradients = np.copy(im)
-    for x, y in zip(fpx, fpy):
-        ex, ey = int(x + Ix[y, x] / arrow_size), int(y + Iy[y, x] / arrow_size)
-        ex, ey = np.clip(ex, 0, w), np.clip(ey, 0, h)
-        cv2.arrowedLine(feature_gradients, (x, y), (ex, ey), (255, 255, 0), 1)
-        
-    fig, ax = plt.subplots(2, 2, figsize=(15, 15))
-    ax[0, 0].imshow(im); ax[0, 0].set_title('Original')
-    ax[0, 1].imshow(np.log(R + 1e-4), cmap='jet'); ax[0, 1].set_title('R')
-    ax[1, 0].imshow(feature_points); ax[1, 0].set_title('Feature Points')
-    ax[1, 1].imshow(feature_gradients); ax[1, 1].set_title('Gradients')
-    # plt.savefig(f'features-{i}.png')
-    plt.show()
-#%%
-plot_features(cw_images[0], R, fpx, fpy, Ix, Iy)
