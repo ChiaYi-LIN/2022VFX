@@ -1,15 +1,23 @@
 #%%
-import numpy as np
-import cv2
 import os
-import matplotlib.pyplot as plt
 import os.path as osp
+import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import cv2
 from scipy.spatial.distance import cdist
 
 #%%
+'''
+Configurations
+'''
 config = {
-    "dirname" : "../parrington",
+    "dirname" : "../data",
+    "img_extensions" : ['.png', '.jpg', '.gif', '.JPG'],
+    "ignore_filenames" : ['pano.jpg'],
+    "focal_src" : "iphone",
+    "image_width" : 3024,
+    "sensor_width": 9.961,
     "left_to_right" : False,
     "pano_save_path" : "../result.png",
 }
@@ -18,6 +26,16 @@ config = {
 '''
 Load images and focals
 '''
+def get_focals(path):
+    with open(path, 'r') as f:
+        return [float(line) for line in f]
+
+def get_focals_iphone(path):
+    # XS MAX: 3024 × 4032, 9.961
+    # 12 PRO MAX: 2268 x 4032, 13.368 
+    with open(path, 'r') as f:
+        return [float(line) * config["image_width"] / config["sensor_width"] for line in f]
+
 def get_focals_autostitch(path):
     focals = []
     with open(path, 'r') as f:
@@ -27,12 +45,12 @@ def get_focals_autostitch(path):
                 focals += [float(data[i])]
     return focals
 
-def read_data(dirname, max_h=480, img_extensions=['.png', '.jpg', '.gif', '.JPG'], ignore_filenames=['pano.jpg']):    
+def read_data(dirname, max_h=480, img_extensions=config["img_extensions"], ignore_filenames=config["ignore_filenames"]):    
     rgbs, focals = [], []
     filenames = sorted(os.listdir(dirname))
-    # print(filenames)
     for filename in filenames:
         if filename in ignore_filenames: continue
+        print(filename)
         name, extension = osp.splitext(filename)
         filepath = osp.join(dirname, filename)
         if extension in img_extensions:
@@ -43,9 +61,22 @@ def read_data(dirname, max_h=480, img_extensions=['.png', '.jpg', '.gif', '.JPG'
                 bgr = cv2.resize(bgr, (new_w, max_h), cv2.INTER_LINEAR)
             rgbs += [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)]
         elif extension in ['.txt']:
-            focals = get_focals_autostitch(filepath)
+            if config["focal_src"] == "autostitch":
+                focals = get_focals_autostitch(filepath)
+            elif config["focal_src"] == "iphone":
+                focals = get_focals_iphone(filepath)
+            elif config["focal_src"] == "txt":
+                focals = get_focals(filepath)
     
     return np.array(rgbs), np.array(focals)
+
+def show_images(images):
+    n = np.ceil(len(images) ** 0.5).astype(int)
+    fig, ax = plt.subplots(n, n, figsize=(15, 15))
+    for i, img in enumerate(images):
+        ax[i // n, i % n].imshow(img)
+    # plt.savefig("../images.jpg")
+    plt.show()
 
 #%%
 '''
@@ -57,6 +88,7 @@ def save_image(rgb, path):
 
 #%%
 images, focals = read_data(config["dirname"])
+show_images(images)
 
 #%%
 def cylinder_warping(imgs, focals):
@@ -81,6 +113,7 @@ def cylinder_warping(imgs, focals):
 
 #%%
 cw_images = cylinder_warping(images, focals)
+show_images(cw_images)
 
 #%%
 def compute_corner_response(gray, kernel=5, sigma=3, k=0.04):
@@ -380,6 +413,7 @@ def drift(pano):
 pano_drift = drift(pano)
 
 #%%
+save_image(pano_drift, config["dirname"] + "/pano.jpg")
 save_image(pano_drift, config["pano_save_path"])
 print(f'Pano saved at {config["pano_save_path"]}')
 
