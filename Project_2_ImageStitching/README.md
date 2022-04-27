@@ -1,12 +1,13 @@
 # Environment
+in /
 ```shell
 cd code
-conda env create --vfx_project_2 --file=environments.yml
+conda env create -n vfx_project_2 -f ./environment.yml
 conda activate vfx_project_2
-cd ..
 ```
 
 # Image Stitching
+in code/
 ```shel
 python image_stitching.py
 ```
