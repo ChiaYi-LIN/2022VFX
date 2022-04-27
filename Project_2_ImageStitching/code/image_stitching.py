@@ -18,7 +18,6 @@ config = {
     "focal_src" : "iphone",
     "image_width" : 3024,
     "sensor_width": 9.961,
-    "left_to_right" : False,
     "pano_save_path" : "../result.png",
 }
 
@@ -295,16 +294,10 @@ def ransac(matches, des1, des2, n=1, K=1000):
 
 #%%
 Dxy = [np.zeros(2).astype(np.int32)]
-if config["left_to_right"]:
-    for i in range(len(cw_images)-1):
-        print(i)
-        matches = find_matches(L_DES[i+1], R_DES[i])
-        Dxy += [ransac(matches, L_DES[i+1], R_DES[i])]
-else:
-    for i in range(len(cw_images)-1):
-        print(i)
-        matches = find_matches(L_DES[i], R_DES[i+1])
-        Dxy += [ransac(matches, L_DES[i], R_DES[i+1])]
+for i in range(len(cw_images)-1):
+    print(i)
+    matches = find_matches(L_DES[i], R_DES[i+1])
+    Dxy += [ransac(matches, L_DES[i], R_DES[i+1])]
 
 #%%
 def get_panorama_init(Dxy_all, image_shape):
