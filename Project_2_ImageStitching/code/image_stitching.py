@@ -87,7 +87,7 @@ def save_image(rgb, path):
 
 #%%
 images, focals = read_data(config["dirname"])
-show_images(images)
+# show_images(images)
 
 #%%
 def cylinder_warping(imgs, focals):
@@ -112,7 +112,7 @@ def cylinder_warping(imgs, focals):
 
 #%%
 cw_images = cylinder_warping(images, focals)
-show_images(cw_images)
+# show_images(cw_images)
 
 #%%
 def compute_corner_response(gray, kernel=5, sigma=3, k=0.04):
